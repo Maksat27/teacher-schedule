@@ -1,19 +1,22 @@
-import { useState, useEffect } from "react";
-import { parseISO, format, eachDayOfInterval } from "date-fns";
+import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  parseISO,
+  format,
+  eachDayOfInterval,
+  differenceInMinutes,
+} from "date-fns";
 import { FaChevronLeft, FaChevronRight } from "react-icons/fa";
 
 function TeacherCalendar({ schedule = [], lessons = [], onSlotSelect }) {
-  // ----------------------------
-  // Settings
-  // ----------------------------
   const VISIBLE_START_HOUR = 0;
   const VISIBLE_END_HOUR = 24;
   const GRANULARITY_MINUTES = 30;
   const SLOT_MS = GRANULARITY_MINUTES * 60_000;
   const MIN_LAST_DATE = new Date("2025-09-05T23:59:59");
+  const ROW_HEIGHT = 40;
 
   // ----------------------------
-  // 1. build day range (from schedule start -> at least MIN_LAST_DATE)
+  // 1. Date range
   // ----------------------------
   const firstDate = schedule.length
     ? parseISO(schedule[0].startTime)
@@ -27,12 +30,12 @@ function TeacherCalendar({ schedule = [], lessons = [], onSlotSelect }) {
   const allDays = eachDayOfInterval({ start: firstDate, end: lastDate });
 
   // ----------------------------
-  // 2. responsive view detection
+  // 2. Responsive view
   // ----------------------------
   const getViewFromWidth = (w) => {
-    if (w <= 640) return "day"; // mobile
-    if (w <= 1024) return "3-day"; // tablet
-    return "week"; // desktop
+    if (w <= 640) return "day";
+    if (w <= 1024) return "3-day";
+    return "week";
   };
 
   const [view, setView] = useState(() =>
@@ -48,7 +51,7 @@ function TeacherCalendar({ schedule = [], lessons = [], onSlotSelect }) {
   const weekSize = view === "week" ? 7 : view === "3-day" ? 3 : 1;
 
   // ----------------------------
-  // 3. paging (Next / Prev)
+  // 3. Paging
   // ----------------------------
   const [pageIndex, setPageIndex] = useState(0);
   const totalPages = Math.max(1, Math.ceil(allDays.length / weekSize));
@@ -56,7 +59,6 @@ function TeacherCalendar({ schedule = [], lessons = [], onSlotSelect }) {
   const endIdx = Math.min(startIdx + weekSize, allDays.length);
   const currentDays = allDays.slice(startIdx, endIdx);
 
-  // header title guard
   const headerTitle = currentDays.length
     ? `${format(currentDays[0], "d MMM")} - ${format(
         currentDays[currentDays.length - 1],
@@ -65,13 +67,9 @@ function TeacherCalendar({ schedule = [], lessons = [], onSlotSelect }) {
     : "";
 
   // ----------------------------
-  // 4. time slots generation
+  // 4. Time slots
   // ----------------------------
-  const generateTimeSlots = (
-    startHour = VISIBLE_START_HOUR,
-    endHour = VISIBLE_END_HOUR,
-    step = GRANULARITY_MINUTES
-  ) => {
+  const generateTimeSlots = (startHour, endHour, step) => {
     const slots = [];
     for (let hour = startHour; hour < endHour; hour++) {
       for (let minute = 0; minute < 60; minute += step) {
@@ -80,10 +78,14 @@ function TeacherCalendar({ schedule = [], lessons = [], onSlotSelect }) {
     }
     return slots;
   };
-  const timeSlots = generateTimeSlots();
+  const timeSlots = generateTimeSlots(
+    VISIBLE_START_HOUR,
+    VISIBLE_END_HOUR,
+    GRANULARITY_MINUTES
+  );
 
   // ----------------------------
-  // 5. helpers (overlap checks)
+  // Helpers
   // ----------------------------
   const overlaps = (aStart, aEnd, bStart, bEnd) =>
     aStart < bEnd && bStart < aEnd;
@@ -95,28 +97,71 @@ function TeacherCalendar({ schedule = [], lessons = [], onSlotSelect }) {
       return overlaps(slotStart, slotEnd, sStart, sEnd);
     });
 
-  const slotOverlapsLesson = (slotStart, slotEnd) =>
-    lessons.find((l) => {
-      const lStart = parseISO(l.startTime);
-      const lEnd = parseISO(l.endTime);
-      return overlaps(slotStart, slotEnd, lStart, lEnd);
+  // Compute lessons as blocks with precise positions
+  const lessonBlocks = [];
+  lessons.forEach((lesson) => {
+    const lStart = parseISO(lesson.startTime);
+    const lEnd = parseISO(lesson.endTime);
+
+    currentDays.forEach((day, dayIdx) => {
+      const dayStart = new Date(day);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setDate(dayEnd.getDate() + 1);
+
+      const overlapStart = Math.max(lStart.getTime(), dayStart.getTime());
+      const overlapEnd = Math.min(lEnd.getTime(), dayEnd.getTime());
+      if (overlapEnd <= overlapStart) return;
+
+      const startMinutes = (overlapStart - dayStart.getTime()) / 60000;
+      const durationMinutes = (overlapEnd - overlapStart) / 60000;
+
+      lessonBlocks.push({
+        lesson,
+        dayIdx,
+        startMinutes,
+        durationMinutes,
+        overlapStart,
+        overlapEnd,
+      });
     });
+  });
 
   // ----------------------------
-  // 6. handlers
+  // Column position measurement
   // ----------------------------
-  const handleNext = () => setPageIndex((p) => Math.min(p + 1, totalPages - 1));
-  const handlePrev = () => setPageIndex((p) => Math.max(p - 1, 0));
+  const dayRefs = useRef([]);
+  const [columnPositions, setColumnPositions] = useState([]);
+
+  const updateColumnPositions = useCallback(() => {
+    const positions = dayRefs.current.map((el) =>
+      el ? { left: el.offsetLeft, width: el.offsetWidth } : null
+    );
+    if (positions.every((p) => p !== null)) {
+      setColumnPositions(positions);
+    }
+  }, []);
+
+  useEffect(() => {
+    const debounce = setTimeout(() => updateColumnPositions(), 100);
+    return () => clearTimeout(debounce);
+  }, [currentDays, view, updateColumnPositions]);
+
+  useEffect(() => {
+    const handleResize = () => updateColumnPositions();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [updateColumnPositions]);
 
   // ----------------------------
-  // 7. render
+  // Render
   // ----------------------------
   return (
-    <div className="m-4 shadow-xl rounded">
+    <div className="p-8 shadow-xl rounded">
       {/* Header */}
       <div className="flex justify-between items-stretch bg-blue-400 text-white h-12">
         <button
-          onClick={handlePrev}
+          onClick={() => setPageIndex((p) => Math.max(p - 1, 0))}
           disabled={pageIndex === 0}
           className="flex items-center justify-center px-4 hover:bg-blue-500 disabled:opacity-50"
         >
@@ -126,7 +171,7 @@ function TeacherCalendar({ schedule = [], lessons = [], onSlotSelect }) {
         <div className="flex items-center text-xl font-bold">{headerTitle}</div>
 
         <button
-          onClick={handleNext}
+          onClick={() => setPageIndex((p) => Math.min(p + 1, totalPages - 1))}
           disabled={pageIndex >= totalPages - 1}
           className="flex items-center justify-center px-4 hover:bg-blue-500 disabled:opacity-50"
         >
@@ -134,85 +179,107 @@ function TeacherCalendar({ schedule = [], lessons = [], onSlotSelect }) {
         </button>
       </div>
 
-      {/* Grid: time column + N day columns. We use inline style for gridTemplateColumns */}
-      <div
-        className="overflow-x-auto"
-        style={{ WebkitOverflowScrolling: "touch" }}
-      >
+      {/* Grid */}
+      <div className="overflow-x-auto relative">
         <div
-          className="grid border text-sm"
+          className="grid border text-sm relative"
           style={{
             gridTemplateColumns: `80px repeat(${currentDays.length}, minmax(140px, 1fr))`,
+            gridAutoRows: `${ROW_HEIGHT}px`,
           }}
         >
-          {/* Days header */}
+          {/* Header Row */}
           <div className="border p-2 bg-white">Time</div>
           {currentDays.map((date, i) => (
-            <div key={i} className="border p-2 text-center bg-white">
+            <div
+              key={i}
+              ref={(el) => (dayRefs.current[i] = el)}
+              className="border  text-center bg-white"
+            >
               <div className="font-bold">{format(date, "EEE")}</div>
               <div>{format(date, "d MMM")}</div>
             </div>
           ))}
 
-          {/* For each time slot -> render the row (time cell + day cells) */}
+          {/* Time Rows */}
           {timeSlots.map((slot, rIdx) => {
-            // time label cell (one per row)
             const timeLabel = `${String(slot.hour).padStart(2, "0")}:${String(
               slot.minute
             ).padStart(2, "0")}`;
-
-            // return a fragment of row cells: first column then each day column
             return (
-              // we use key `${rIdx}` and render row cells sequentially
               <div key={`time-${rIdx}`} className="contents">
-                {/* Time column */}
                 <div className="border p-2 text-xs bg-white">{timeLabel}</div>
-
-                {/* Day columns */}
                 {currentDays.map((day, cIdx) => {
-                  // build slot start and end for this specific day cell
                   const slotStart = new Date(day);
                   slotStart.setHours(slot.hour, slot.minute, 0, 0);
                   const slotEnd = new Date(slotStart.getTime() + SLOT_MS);
 
-                  const lesson = slotOverlapsLesson(slotStart, slotEnd);
                   const available = slotOverlapsSchedule(slotStart, slotEnd);
-
-                  let bgClass = "bg-gray-100";
-                  if (lesson) bgClass = "bg-red-300 cursor-pointer";
-                  else if (available) bgClass = "bg-green-200 cursor-pointer";
-
                   return (
                     <div
                       key={`cell-${rIdx}-${cIdx}`}
-                      className={`border p-2 text-center ${bgClass} hover:brightness-95`}
-                      onClick={() => {
-                        if (lesson) {
-                          // show user-friendly date/time (no timezone)
-                          const startLabel = format(
-                            parseISO(lesson.startTime),
-                            "d MMM, HH:mm"
-                          );
-                          const endLabel = lesson.endTime
-                            ? format(parseISO(lesson.endTime), "d MMM, HH:mm")
-                            : "";
-                          alert(
-                            `${lesson.student ?? "Lesson"} • ${
-                              lesson.duration
-                            }m\n${startLabel}${
-                              endLabel ? " - " + endLabel : ""
-                            }`
-                          );
-                        } else if (available && onSlotSelect) {
-                          onSlotSelect({
-                            startTime: slotStart,
-                            endTime: slotEnd,
-                          });
-                        }
-                      }}
+                      className={`border p-2 ${
+                        available
+                          ? "bg-green-200 cursor-pointer"
+                          : "bg-gray-100"
+                      } hover:brightness-95`}
+                      onClick={() =>
+                        available &&
+                        onSlotSelect &&
+                        onSlotSelect({ startTime: slotStart, endTime: slotEnd })
+                      }
                     />
                   );
                 })}
+              </div>
+            );
+          })}
+
+          {/* Lessons Overlay (absolute positioned) */}
+          {lessonBlocks.map((block, i) => {
+            const {
+              lesson,
+              dayIdx,
+              startMinutes,
+              durationMinutes,
+              overlapStart,
+              overlapEnd,
+            } = block;
+            const pos = columnPositions[dayIdx];
+            if (!pos) return null;
+
+            const top =
+              ROW_HEIGHT + (startMinutes / GRANULARITY_MINUTES) * ROW_HEIGHT;
+            const height = (durationMinutes / GRANULARITY_MINUTES) * ROW_HEIGHT;
+            const duration = Math.round(durationMinutes);
+
+            return (
+              <div
+                key={i}
+                className="absolute rounded-md p-2 text-white text-xs font-bold"
+                style={{
+                  left: `${pos.left}px`,
+                  width: `${pos.width}px`,
+                  top: `${top}px`,
+                  height: `${height}px`,
+                  backgroundColor: "#f87171",
+                  zIndex: 10,
+                  cursor: "pointer",
+                }}
+                onClick={() =>
+                  alert(
+                    `${lesson.student ?? "Lesson"} • ${duration} min\n${format(
+                      new Date(overlapStart),
+                      "HH:mm"
+                    )} - ${format(new Date(overlapEnd), "HH:mm")}`
+                  )
+                }
+              >
+                <div>{lesson.student ?? "Lesson"}</div>
+                <div>
+                  {format(new Date(overlapStart), "HH:mm")} -{" "}
+                  {format(new Date(overlapEnd), "HH:mm")}
+                </div>
               </div>
             );
           })}

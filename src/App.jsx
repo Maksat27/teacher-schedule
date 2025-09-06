@@ -62,7 +62,7 @@ function App() {
 
   return (
     <div className="max-w-full mx-auto">
-      <h1 className="text-3xl font-bold m-12">Teacher Schedule</h1>
+      <h1 className="text-3xl font-bold p-8">Teacher Schedule</h1>
       <TeacherCalendar
         view="week"
         startDate={new Date("2025-08-25")}
